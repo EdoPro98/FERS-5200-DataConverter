@@ -1,3 +1,10 @@
+# Binary file
+converter/dataconverter
+
+# Data files
+*.root
+*.dat
+
 # Prerequisites
 *.d
 
