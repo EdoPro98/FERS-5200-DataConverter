@@ -2,15 +2,27 @@
 #include <map>
 #include <stdint.h>
 
-static constexpr bool VERBOSE = false;
+// Control code verbosity
+enum class Verbose { kQuiet, kError, kWarn, kInfo, kPedantic };
 
-static constexpr uint8_t NCHANNELS = 64;
+// Enum for different acquisition modes
+enum class AcquisitionMode { kSpectroscopy, kTiming, kSpectroscopyTiming, kCounting };
+
+// Maximum number of boards (in this case 5 boards used at test beam)
 static constexpr uint8_t MAX_BOARDS = 5;
+// Number of channels read out by each board
+static constexpr uint8_t NCHANNELS = 64;
+// Size on the file header (14 bytes as per CAEN manual)
 static constexpr uint8_t FILE_HEADER_SIZE = 14;
 
+// Size of the header of each event (spectroscopy - timing - spectroscopy&timing
+// - counting)
 static constexpr uint32_t EVENT_HEADER_SIZE[] = {27, 21, 27, 27};
+// Size of one channel read out (spectroscopy - timing - spectroscopy&timing -
+// counting)
 static constexpr uint32_t EVENTS_SIZE[] = {6, 7, 12, 5};
 
+// Map from channel number to fiber in calorimeter
 static constexpr uint8_t MAPPING_LUT[] = {
     0,  40, 8,  32, // 0 - 3
     1,  41, 9,  33, // 4 - 7
