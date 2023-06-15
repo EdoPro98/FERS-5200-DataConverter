@@ -43,7 +43,7 @@ struct Event {
   uint64_t triggerId;
   double triggerTimeStamp;
   uint8_t boardId;
-  bool operator<(const Event& lhs) { return this->triggerId < lhs.triggerId; }
+  bool operator<(const Event& lhs) const { return this->triggerId < lhs.triggerId; }
 };
 
 // Struct used only in root file writing
@@ -61,8 +61,8 @@ std::vector<Event> parseData(const std::vector<char>&, const FileInfo&);
 void writeDataToRoot(const std::vector<Event>&, const FileInfo&, const std::string&);
 
 // Specific parsing functions
-std::vector<Event> parseSpectroscopyData(const std::vector<char>&, const std::vector<uint32_t>&);
-std::vector<Event> parseSpectroscopyTimingData(const std::vector<char>&, const std::vector<uint32_t>&);
+std::vector<Event> parseSpectroscopyData(const std::vector<char>&, const FileInfo&);
+std::vector<Event> parseSpectroscopyTimingData(const std::vector<char>&, const FileInfo&);
 
 void writeSpectroscopyToRoot(const std::vector<Event>&, const FileInfo&, const std::string&);
 void writeSpectroscopyTimingToRoot(const std::vector<Event>&, const FileInfo&, const std::string&);

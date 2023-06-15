@@ -51,6 +51,7 @@ FileHeader getFileHeader(const std::vector<char>& rawData) {
   std::memcpy(&swv3, &rawData[4], sizeof(uint8_t));
   std::memcpy(&header.acqMode, &rawData[5], sizeof(uint8_t));
   std::memcpy(&header.acqStart, &rawData[6], sizeof(uint64_t));
+
   header.dataFormatVersion = std::to_string(dfv1) + "." + std::to_string(dfv2);
   header.softwareVersion = std::to_string(swv1) + "." + std::to_string(swv2) + "." + std::to_string(swv3);
   return header;
@@ -108,18 +109,19 @@ FileInfo getFileInfo(const std::vector<char>& rawData, const FileHeader& header)
     const uint32_t expectedEventSize =
         EVENT_HEADER_SIZE[(int)fileInfo.acquisitionMode] + nChannlesActive * EVENTS_SIZE[(int)fileInfo.acquisitionMode];
 
-    if (eventSize != expectedEventSize | boardId > 15) {
-      if (eventSize == 0) {
-        logging("===============================================", Verbose::kError);
-        logging("= Something went very wrong! Event size is 0! =", Verbose::kError);
-        logging("===============================================", Verbose::kError);
-        exit(EXIT_FAILURE);
-      } else if (boardId > 15) {
-        logging("================================================", Verbose::kError);
-        logging("= Something went very wrong! Board ID is > 15! =", Verbose::kError);
-        logging("================================================", Verbose::kError);
-        exit(EXIT_FAILURE);
-      }
+    if (eventSize == 0) {
+      logging("===============================================", Verbose::kError);
+      logging("= Something went very wrong! Event size is 0! =", Verbose::kError);
+      logging("===============================================", Verbose::kError);
+      exit(EXIT_FAILURE);
+    } else if (boardId > 15) {
+      logging("================================================", Verbose::kError);
+      logging("= Something went very wrong! Board ID is > 15! =", Verbose::kError);
+      logging("================================================", Verbose::kError);
+      exit(EXIT_FAILURE);
+    }
+
+    if (eventSize != expectedEventSize) {
       logging("Caught error in file!", Verbose::kWarn);
       logging("Event number:" + std::to_string(iEvent), Verbose::kWarn);
       logging("Error position:" + std::to_string(iByte), Verbose::kWarn);
@@ -160,7 +162,11 @@ std::vector<Event> parseData(const std::vector<char>& rawData, const FileInfo& f
   std::vector<Event> events;
   switch (fileInfo.acquisitionMode) {
   case AcquisitionMode::kSpectroscopy:
-    events = parseSpectroscopyData(rawData, fileInfo.eventStartByte);
+    events = parseSpectroscopyData(rawData, fileInfo);
+    break;
+  case AcquisitionMode::kSpectroscopyTiming:
+    events = parseSpectroscopyTimingData(rawData, fileInfo);
+    break;
   }
   return events;
 }
@@ -169,14 +175,17 @@ void writeDataToRoot(const std::vector<Event>& eventsVector, const FileInfo& fil
   switch (fileInfo.acquisitionMode) {
   case AcquisitionMode::kSpectroscopy:
     writeSpectroscopyToRoot(eventsVector, fileInfo, fileName);
+    break;
+  case AcquisitionMode::kSpectroscopyTiming:
+    writeSpectroscopyTimingToRoot(eventsVector, fileInfo, fileName);
+    break;
   }
 }
 
-std::vector<Event> parseSpectroscopyData(const std::vector<char>& rawData,
-                                         const std::vector<uint32_t>& eventStartByte) {
+std::vector<Event> parseSpectroscopyData(const std::vector<char>& rawData, const FileInfo& fileInfo) {
 
   // Retrieve number of events
-  const uint32_t nEvents = eventStartByte.size();
+  const uint32_t nEvents = fileInfo.eventStartByte.size();
   std::vector<Event> output(nEvents);
 
   // Loop on events
@@ -184,7 +193,7 @@ std::vector<Event> parseSpectroscopyData(const std::vector<char>& rawData,
     // Prepare single event
     Event event;
     // Starting byte of event
-    const uint32_t startByte = eventStartByte[i];
+    const uint32_t startByte = fileInfo.eventStartByte[i];
 
     // Read and store event header data
     std::memcpy(&event.boardId, &rawData[startByte + 2], sizeof(uint8_t));
@@ -221,7 +230,7 @@ std::vector<Event> parseSpectroscopyData(const std::vector<char>& rawData,
 
   return output;
 }
-/*
+
 std::vector<Event> parseSpectroscopyTimingData(const std::vector<char>& rawData, const FileInfo& fileInfo) {
   std::vector<Event> output(fileInfo.nEvents);
 
@@ -270,9 +279,8 @@ std::vector<Event> parseSpectroscopyTimingData(const std::vector<char>& rawData,
   std::sort(output.begin(), output.end());
   return output;
 }
-*/
-void writeSpectroscopyToRoot(const std::vector<Event>& eventsVector, const FileInfo& fileInfo,
-                             const std::string& fileName) {
+
+void writeSpectroscopyToRoot(const std::vector<Event>& events, const FileInfo& fileInfo, const std::string& fileName) {
 
   // Change extension to file name
   const std::string rootFileName = fileName.substr(0, fileName.find_last_of(".")) + ".root";
@@ -314,14 +322,12 @@ void writeSpectroscopyToRoot(const std::vector<Event>& eventsVector, const FileI
   rootTreeEvent.Branch("BoardId", &boardId, "BoardId/b", 128000);
 
   logging("Starting to write per channel data...", Verbose::kPedantic);
-  for (uint32_t i = 0; i < fileInfo.nEvents; ++i) {
-    boardId = eventsVector[i].boardId;
-    triggerId = eventsVector[i].triggerId;
-    triggerTime = eventsVector[i].triggerTimeStamp;
-    for (uint16_t j = 0; j < NCHANNELS; ++j) {
-      HighGainADC[j] = eventsVector[i].hgPha[j];
-      LowGainADC[j] = eventsVector[i].lgPha[j];
-    }
+  for (const auto& event : events) {
+    boardId = event.boardId;
+    triggerId = event.triggerId;
+    triggerTime = event.triggerTimeStamp;
+    std::memcpy(HighGainADC, event.hgPha.begin(), NCHANNELS * sizeof(uint16_t));
+    std::memcpy(LowGainADC, event.lgPha.begin(), NCHANNELS * sizeof(uint16_t));
     rootTreeEvent.Fill();
   }
   rootTreeEvent.AutoSave();
@@ -332,38 +338,33 @@ void writeSpectroscopyToRoot(const std::vector<Event>& eventsVector, const FileI
   rootFile.cd("Histograms");
 
   // Per channel histograms
-  std::vector<std::vector<TH1F*>> histoslg(fileInfo.nBoards);
-  std::vector<std::vector<TH1F*>> histoshg(fileInfo.nBoards);
+  std::vector<std::vector<TH1I>> histoshg(fileInfo.nBoards, std::vector<TH1I>(NCHANNELS));
+  std::vector<std::vector<TH1I>> histoslg(fileInfo.nBoards, std::vector<TH1I>(NCHANNELS));
 
-  for (uint32_t i = 0; i < fileInfo.nBoards; ++i) {
-    histoshg.resize(NCHANNELS);
-    histoslg.resize(NCHANNELS);
-  }
-
-  // TODO: maybe better to avoid allocating TH1F to heap with new
   logging("Starting to write per channel histograms...", Verbose::kPedantic);
   for (uint32_t i = 0; i < fileInfo.nBoards; ++i) {
     for (uint32_t j = 0; j < NCHANNELS; ++j) {
-      std::string titleHG = "HighGainADC Board " + std::to_string(i) + "Channel " + std::to_string(j);
-      std::string titleLG = "LowGainADC Board " + std::to_string(i) + "Channel " + std::to_string(j);
-      histoslg[i].push_back(new TH1F(titleLG.c_str(), "LowGainADC;ADC", 4096, 0, 4096));
-      histoshg[i].push_back(new TH1F(titleHG.c_str(), "HighGainADC;ADC", 4096, 0, 4096));
+      const std::string titleHG = "HighGainADC Board " + std::to_string(i) + "Channel " + std::to_string(j);
+      const std::string titleLG = "LowGainADC Board " + std::to_string(i) + "Channel " + std::to_string(j);
+      histoslg[i][j] = TH1I(titleLG.c_str(), "LowGainADC;ADC", 4096, 0, 4095);
+      histoshg[i][j] = TH1I(titleHG.c_str(), "HighGainADC;ADC", 4096, 0, 4095);
     }
   }
 
   // Fill histograms
-  for (uint32_t i = 0; i < fileInfo.nEvents; ++i) {
+  for (const auto& event : events) {
+    const uint8_t bid = event.boardId;
     for (uint32_t j = 0; j < NCHANNELS; ++j) {
-      histoslg[eventsVector[i].boardId][j]->Fill(eventsVector[i].lgPha[j]);
-      histoshg[eventsVector[i].boardId][j]->Fill(eventsVector[i].hgPha[j]);
+      histoslg[bid][j].Fill(event.lgPha[j]);
+      histoshg[bid][j].Fill(event.hgPha[j]);
     }
   }
 
   // Write histograms to file
   for (uint32_t i = 0; i < fileInfo.nBoards; ++i) {
     for (uint32_t j = 0; j < NCHANNELS; ++j) {
-      histoslg[i][j]->Write();
-      histoshg[i][j]->Write();
+      histoslg[i][j].Write();
+      histoshg[i][j].Write();
     }
   }
   logging("Finished writing histograms...", Verbose::kPedantic);
@@ -384,11 +385,10 @@ void writeSpectroscopyToRoot(const std::vector<Event>& eventsVector, const FileI
     logging("Cannot close ROOT file!", Verbose::kError);
     exit(EXIT_FAILURE);
   }
-  logging("ROOT file closed...", Verbose::kPedantic);
 }
 
-/*
-void writeSpectroscopyTimingToRoot(const std::vector<Event>& events, const FileInfo& info, const std::string& fname) {
+void writeSpectroscopyTimingToRoot(const std::vector<Event>& events, const FileInfo& fileInfo,
+                                   const std::string& fname) {
   const std::string rootfname = fname.substr(0, fname.find_last_of(".")) + ".root";
 
   TFile rootFile(rootfname.c_str(), "RECREATE");
@@ -398,10 +398,10 @@ void writeSpectroscopyTimingToRoot(const std::vector<Event>& events, const FileI
   RootFileInfo rootfileinfo;
   rootTreeInfo.Branch("FileInfo", &rootfileinfo,
                       "AcquisitionStartMs/l:NumberOfEvents:NumberOfBoards/b:AcquisitionMode");
-  rootfileinfo.acquisitionStartTimeMs = info.startAcqMs;
-  rootfileinfo.nEvents = info.nEvents;
-  rootfileinfo.nBoards = info.nBoards;
-  rootfileinfo.acquisitionMode = (int)info.acquisitionMode;
+  rootfileinfo.acquisitionStartTimeMs = fileInfo.startAcqMs;
+  rootfileinfo.nEvents = fileInfo.nEvents;
+  rootfileinfo.nBoards = fileInfo.nBoards;
+  rootfileinfo.acquisitionMode = (int)fileInfo.acquisitionMode;
   rootTreeInfo.Fill();
   rootTreeInfo.Write();
 
@@ -421,16 +421,14 @@ void writeSpectroscopyTimingToRoot(const std::vector<Event>& events, const FileI
   rootTreeEvent.Branch("TriggerTimeStampUs", &triggerTime, "TriggerTimeStampUs/D", 128000);
   rootTreeEvent.Branch("BoardId", &boardId, "BoardId/b", 128000);
 
-  for (int i = 0; i < info.nEvents; ++i) {
-    boardId = events[i].boardId;
-    triggerId = events[i].triggerId;
-    triggerTime = events[i].triggerTimeStamp;
-    for (int j = 0; j < NCHANNELS; ++j) {
-      HighGainADC[j] = events[i].hgPha[j];
-      LowGainADC[j] = events[i].lgPha[j];
-      Toa[j] = events[i].toa[j];
-      Tot[j] = events[i].tot[j];
-    }
+  for (const auto& event : events) {
+    boardId = event.boardId;
+    triggerId = event.triggerId;
+    triggerTime = event.triggerTimeStamp;
+    std::memcpy(HighGainADC, event.hgPha.begin(), NCHANNELS * sizeof(uint16_t));
+    std::memcpy(LowGainADC, event.lgPha.begin(), NCHANNELS * sizeof(uint16_t));
+    std::memcpy(Toa, event.toa.begin(), NCHANNELS * sizeof(uint32_t));
+    std::memcpy(Tot, event.tot.begin(), NCHANNELS * sizeof(uint16_t));
     rootTreeEvent.Fill();
   }
   rootTreeEvent.AutoSave();
@@ -438,35 +436,40 @@ void writeSpectroscopyTimingToRoot(const std::vector<Event>& events, const FileI
   rootFile.mkdir("Histograms");
   rootFile.cd("Histograms");
 
-  std::vector<std::vector<TH1F*>> histoslg(info.nBoards);
-  std::vector<std::vector<TH1F*>> histoshg(info.nBoards);
+  std::vector<std::vector<TH1I>> histoslg(fileInfo.nBoards, std::vector<TH1I>(NCHANNELS));
+  std::vector<std::vector<TH1I>> histoshg(fileInfo.nBoards, std::vector<TH1I>(NCHANNELS));
+  std::vector<std::vector<TH1I>> histostot(fileInfo.nBoards, std::vector<TH1I>(NCHANNELS));
+  std::vector<std::vector<TH1I>> histostoa(fileInfo.nBoards, std::vector<TH1I>(NCHANNELS));
 
-  for (int i = 0; i < info.nBoards; ++i) {
-    histoshg.resize(NCHANNELS);
-    histoslg.resize(NCHANNELS);
-  }
-
-  for (int i = 0; i < info.nBoards; ++i) {
-    for (int j = 0; j < NCHANNELS; ++j) {
-      std::string titleHG = "HighGainADC Board " + std::to_string(i) + "Channel " + std::to_string(j);
-      std::string titleLG = "LowGainADC Board " + std::to_string(i) + "Channel " + std::to_string(j);
-      histoslg[i].push_back(new TH1F(titleLG.c_str(), "LowGainADC;ADC", 4096, 0, 4096));
-      histoshg[i].push_back(new TH1F(titleHG.c_str(), "HighGainADC;ADC", 4096, 0, 4096));
+  for (uint32_t i = 0; i < fileInfo.nBoards; ++i) {
+    for (uint32_t j = 0; j < NCHANNELS; ++j) {
+      const std::string titleHG = "HighGainADC Board " + std::to_string(i) + "Channel " + std::to_string(j);
+      const std::string titleLG = "LowGainADC Board " + std::to_string(i) + "Channel " + std::to_string(j);
+      const std::string titleTOT = "TotTDC Board " + std::to_string(i) + "Channel " + std::to_string(j);
+      const std::string titleTOA = "ToaTDC Board " + std::to_string(i) + "Channel " + std::to_string(j);
+      histoslg[i][j] = TH1I(titleLG.c_str(), "LowGainADC;ADC", 4096, 0, 4095);
+      histoshg[i][j] = TH1I(titleHG.c_str(), "HighGainADC;ADC", 4096, 0, 4095);
+      histostot[i][j] = TH1I(titleHG.c_str(), "TotTDC;TDC", 4096, 0, 4095);
+      histostoa[i][j] = TH1I(titleHG.c_str(), "ToaTDC;TDC", 4096, 0, 4095);
     }
   }
 
-  for (int i = 0; i < info.nEvents; ++i) {
-    uint8_t bid = events[i].boardId;
+  for (const auto& event : events) {
+    uint8_t bid = event.boardId;
     for (int j = 0; j < NCHANNELS; ++j) {
-      histoslg[bid][j]->Fill(events[i].lgPha[j]);
-      histoshg[bid][j]->Fill(events[i].hgPha[j]);
+      histoslg[bid][j].Fill(event.lgPha[j]);
+      histoshg[bid][j].Fill(event.hgPha[j]);
+      histostot[bid][j].Fill(event.tot[j]);
+      histostoa[bid][j].Fill(event.toa[j]);
     }
   }
 
-  for (int i = 0; i < info.nBoards; ++i) {
+  for (int i = 0; i < fileInfo.nBoards; ++i) {
     for (int j = 0; j < NCHANNELS; ++j) {
-      histoslg[i][j]->Write();
-      histoshg[i][j]->Write();
+      histoslg[i][j].Write();
+      histoshg[i][j].Write();
+      histostot[i][j].Write();
+      histostoa[i][j].Write();
     }
   }
 
@@ -477,9 +480,13 @@ void writeSpectroscopyTimingToRoot(const std::vector<Event>& events, const FileI
 
   rootTreeCalibration.Write();
 
+  // Close file
   rootFile.Close();
+  if (rootFile.IsOpen()) {
+    logging("Cannot close ROOT file!", Verbose::kError);
+    exit(EXIT_FAILURE);
+  }
 }
-*/
 
 void logging(const std::string& message, const Verbose level) {
   if ((int)level <= (int)VERBOSE || VERBOSE == Verbose::kPedantic) {
@@ -505,19 +512,21 @@ int main(int argc, char const* argv[]) {
   }
 
   if (argc > 2) {
-    const std::string verboseLevel = std::string(argv[2]);
-    if (verboseLevel == "v") {
-      VERBOSE = Verbose::kError;
-    } else if (verboseLevel == "vv") {
-      VERBOSE = Verbose::kWarn;
-    } else if (verboseLevel == "vvv") {
-      VERBOSE = Verbose::kInfo;
-    } else if (verboseLevel == "vvvv") {
-      VERBOSE = Verbose::kPedantic;
-    } else if (verboseLevel == "V") {
-      VERBOSE = Verbose::kPedantic;
-    } else {
-      VERBOSE = Verbose::kQuiet;
+    for (int i = 0; i < argc; ++i) {
+      const std::string verboseLevel = argv[i];
+      if (verboseLevel == "v") {
+        VERBOSE = Verbose::kError;
+      } else if (verboseLevel == "vv") {
+        VERBOSE = Verbose::kWarn;
+      } else if (verboseLevel == "vvv") {
+        VERBOSE = Verbose::kInfo;
+      } else if (verboseLevel == "vvvv") {
+        VERBOSE = Verbose::kPedantic;
+      } else if (verboseLevel == "V") {
+        VERBOSE = Verbose::kPedantic;
+      } else {
+        VERBOSE = Verbose::kQuiet;
+      }
     }
   }
   const std::string fileName = argv[1];

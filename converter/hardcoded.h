@@ -1,5 +1,4 @@
 #pragma once
-#include <map>
 #include <stdint.h>
 
 // Control code verbosity
@@ -13,7 +12,7 @@ static constexpr uint8_t MAX_BOARDS = 5;
 // Number of channels read out by each board
 static constexpr uint8_t NCHANNELS = 64;
 // Size on the file header (14 bytes as per CAEN manual)
-static constexpr uint8_t FILE_HEADER_SIZE = 14;
+static constexpr uint8_t FILE_HEADER_SIZE = 21;
 
 // Size of the header of each event (spectroscopy - timing - spectroscopy&timing
 // - counting)
